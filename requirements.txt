@@ -15,6 +15,12 @@ langchain-openai>=0.3.0
 langgraph>=0.3.0
 openai>=1.0.0
 
+# Web interface
+gradio>=4.0.0
+
+# Reranking (local cross-encoder, no API key required)
+flashrank>=0.2.0
+
 # Utilities
 python-dotenv>=1.0.0
 pydantic>=2.0.0
