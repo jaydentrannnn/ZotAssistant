@@ -224,50 +224,93 @@ def parse_courses_from_pdf(pdf_bytes: bytes, url: str) -> list | None:
 # Policy — HTML Parser
 # ──────────────────────────────────────────────────────────────────────────────
 
+# Tags whose children we recurse into but don't extract text from directly
+_CONTAINER_TAGS = {"div", "section", "article", "main", "aside", "nav",
+                   "header", "footer", "ul", "ol", "dl", "blockquote"}
+
+
+def extract_table_text(table) -> str:
+    """
+    Convert an HTML table into readable lines of text.
+    Each row becomes one line with cells joined by ' | '.
+    Header cells (<th>) and data cells (<td>) are treated identically.
+    Empty rows are skipped.
+    """
+    lines = []
+    for row in table.find_all("tr"):
+        cells = [cell.get_text(" ", strip=True) for cell in row.find_all(["th", "td"])]
+        cells = [c for c in cells if c]  # drop empty cells
+        if cells:
+            lines.append(" | ".join(cells))
+    return "\n".join(lines)
+
+
+def _walk(elem, current_lines: list, sections: list, state: dict) -> None:
+    """
+    Recursively walk an element's direct children, collecting text into
+    sections split by headings. Tables are handled atomically so their
+    cells are never visited individually as descendants.
+    """
+    for child in elem.children:
+        if not hasattr(child, "name") or child.name is None:
+            continue
+
+        if child.name in ("h1", "h2", "h3", "h4", "h5", "h6"):
+            text = child.get_text(strip=True)
+            if not text:
+                continue
+            # Flush accumulated content under the previous heading
+            content = " ".join(current_lines).strip()
+            if content:
+                sections.append({
+                    "heading": state["heading"],
+                    "level":   state["level"],
+                    "content": content,
+                })
+            current_lines.clear()
+            state["heading"] = text
+            state["level"]   = child.name
+
+        elif child.name == "table":
+            # Handle the entire table as one atomic unit — never descend into it
+            text = extract_table_text(child)
+            if text:
+                current_lines.append(text)
+
+        elif child.name in ("p", "li", "dt", "dd"):
+            text = child.get_text(" ", strip=True)
+            if text:
+                current_lines.append(text)
+
+        elif child.name in _CONTAINER_TAGS:
+            # Recurse into layout containers without extracting them directly
+            _walk(child, current_lines, sections, state)
+
+
 def extract_policy_sections(soup: BeautifulSoup, url: str) -> dict:
     """
     Extract a policy page's content organized by heading hierarchy.
-    Each heading + its following paragraph/list content becomes one section.
+    Each heading + its following content (paragraphs, lists, tables) becomes
+    one section. Tables are converted to pipe-delimited text rows.
     """
     title = soup.title.string.strip() if soup.title and soup.title.string else ""
 
     for tag in soup(["script", "style", "noscript"]):
         tag.decompose()
 
-    sections = []
-    current_heading = title or "Introduction"
-    current_level   = "h1"
-    current_lines   = []
+    sections    = []
+    state       = {"heading": title or "Introduction", "level": "h1"}
+    current_lines: list[str] = []
 
     body = soup.find("body") or soup
-    for elem in body.descendants:
-        if not hasattr(elem, "name") or elem.name is None:
-            continue
-        if elem.name in ("h1", "h2", "h3", "h4", "h5", "h6"):
-            text = elem.get_text(strip=True)
-            if not text:
-                continue
-            content = " ".join(current_lines).strip()
-            if content:
-                sections.append({
-                    "heading": current_heading,
-                    "level":   current_level,
-                    "content": content,
-                })
-            current_heading = text
-            current_level   = elem.name
-            current_lines   = []
-        elif elem.name in ("p", "li"):
-            text = elem.get_text(" ", strip=True)
-            if text:
-                current_lines.append(text)
+    _walk(body, current_lines, sections, state)
 
     # Flush the final section
     content = " ".join(current_lines).strip()
     if content:
         sections.append({
-            "heading": current_heading,
-            "level":   current_level,
+            "heading": state["heading"],
+            "level":   state["level"],
             "content": content,
         })
 
