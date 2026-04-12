@@ -206,5 +206,12 @@ marimo/_static/
 marimo/_lsp/
 __marimo__/
 
-#Data
-catalogue.uci.edu/
+# Data (crawler output and vector stores — rebuild locally by running crawler + ingest)
+catalogue.uci.edu
+data/raw/
+data/db/
+.vscode/
+
+# Claude
+.claude/
+CLAUDE.md
