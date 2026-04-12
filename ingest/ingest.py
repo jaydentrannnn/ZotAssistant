@@ -105,10 +105,14 @@ def ingest_course_page(page: dict, collection, chunk_size: int, chunk_overlap: i
         }
 
         chunks = chunk_text(build_course_text(course), chunk_size, chunk_overlap)
+        # Prepend the course code to every chunk beyond the first so that
+        # semantic search can match later chunks (e.g. "Prerequisite: MATH 2B")
+        # back to the correct course — mirrors what the policy handler does.
+        prefix = f"[{code}] "
         for n, chunk in enumerate(chunks):
             doc_id = code if len(chunks) == 1 else f"{code}::chunk_{n}"
             ids.append(doc_id)
-            documents.append(chunk)
+            documents.append(chunk if n == 0 else prefix + chunk)
             metadatas.append(metadata)
 
     if ids:
