@@ -83,8 +83,17 @@ async def _retrieve_step(inputs: dict) -> dict:
 
 def _format_context(inputs: dict) -> dict:
     docs: list[Document] = inputs.get("docs", [])
+    file_context: str | None = inputs.get("file_context")
+
+    parts: list[str] = []
+
+    # User-attached document goes first so the LLM sees it before any RAG sources.
+    if file_context:
+        parts.append(f"[User-Attached Document]\n{file_context}")
+
     if not docs:
-        context = "No relevant information found in the UCI academic database."
+        if not file_context:
+            parts.append("No relevant information found in the UCI academic database.")
     else:
         # Group chunks by source URL so that multi-chunk pages (e.g. the full CS
         # major requirements split across 6 chunks) read as one coherent document
@@ -96,11 +105,11 @@ def _format_context(inputs: dict) -> dict:
             url = doc.metadata.get("url", "") or "UCI Academic Resources"
             groups[url].append(doc)
 
-        parts = []
         for i, (url, group_docs) in enumerate(groups.items(), 1):
             combined = "\n\n".join(d.page_content for d in group_docs)
             parts.append(f"[Source {i} — {url}]\n{combined}")
-        context = "\n\n---\n\n".join(parts)
+
+    context = "\n\n---\n\n".join(parts)
     return {**inputs, "context": context}
 
 

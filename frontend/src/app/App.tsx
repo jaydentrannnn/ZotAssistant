@@ -66,10 +66,17 @@ export default function App() {
     // Capture before clearing state
     const messageToSend = input.trim();
 
+    const attachedFile = file;
+    const userMessageContent = messageToSend
+      ? attachedFile
+        ? `${messageToSend}\n\n📎 ${attachedFile.name}`
+        : messageToSend
+      : `📎 ${attachedFile?.name}`;
+
     const userMessage: Message = {
       id: Date.now().toString(),
       role: "user",
-      content: messageToSend || `[Attached: ${file?.name}]`,
+      content: userMessageContent,
       timestamp: formatTimestamp(),
     };
 
@@ -80,10 +87,15 @@ export default function App() {
     setIsLoading(true);
 
     try {
+      const formData = new FormData();
+      formData.append("message", messageToSend);
+      formData.append("session_id", sessionId);
+      if (attachedFile) formData.append("file", attachedFile);
+
       const response = await fetch("/api/chat", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ message: messageToSend, session_id: sessionId }),
+        // Do NOT set Content-Type — the browser sets multipart/form-data + boundary automatically
+        body: formData,
       });
 
       if (!response.ok) {
@@ -173,13 +185,11 @@ export default function App() {
       "application/pdf",
       "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
       "text/plain",
-      "image/png",
-      "image/jpeg",
     ];
 
     if (!allowedTypes.includes(selectedFile.type)) {
       setError(
-        "Unsupported file type. Please upload PDF, DOCX, TXT, PNG, or JPG."
+        "Unsupported file type. Please upload a PDF, DOCX, or TXT file."
       );
       setTimeout(() => setError(null), 4000);
       return;
@@ -282,7 +292,7 @@ export default function App() {
             ref={fileInputRef}
             type="file"
             className="hidden"
-            accept=".pdf,.docx,.txt,.png,.jpg,.jpeg"
+            accept=".pdf,.docx,.txt"
             onChange={handleFileSelect}
           />
 

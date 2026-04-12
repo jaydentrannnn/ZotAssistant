@@ -14,15 +14,16 @@ isolated and every refresh starts a fresh conversation.
 
 import argparse
 from pathlib import Path
+from typing import Optional
 
 import uvicorn
-from fastapi import FastAPI
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
 
 from .chain import chain
+from .file_parser import extract_text
 
 app = FastAPI(title="UCI Academic Assistant")
 
@@ -39,15 +40,10 @@ app.add_middleware(
 # Chat endpoint — SSE streaming
 # ──────────────────────────────────────────────────────────────────────────────
 
-class ChatRequest(BaseModel):
-    message: str
-    session_id: str
-
-
-async def _sse_stream(message: str, session_id: str):
+async def _sse_stream(message: str, session_id: str, file_context: Optional[str]):
     """Yield SSE-formatted token chunks from the LangChain chain."""
     async for chunk in chain.astream(
-        {"input": message},
+        {"input": message, "file_context": file_context},
         config={"configurable": {"session_id": session_id}},
     ):
         # Escape newlines so each event stays on a single line
@@ -57,11 +53,24 @@ async def _sse_stream(message: str, session_id: str):
 
 
 @app.post("/api/chat")
-async def chat(request: ChatRequest):
-    if not request.message.strip():
-        return {"error": "Empty message"}
+async def chat(
+    message: str = Form(default=""),
+    session_id: str = Form(...),
+    file: Optional[UploadFile] = File(default=None),
+):
+    file_context: Optional[str] = None
+    if file and file.filename:
+        try:
+            file_context = await extract_text(file)
+        except ValueError as e:
+            print(f"[file upload error] {e}")
+            raise HTTPException(status_code=400, detail=str(e))
+
+    if not message.strip() and not file_context:
+        raise HTTPException(status_code=400, detail="Empty message")
+
     return StreamingResponse(
-        _sse_stream(request.message, request.session_id),
+        _sse_stream(message, session_id, file_context),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",

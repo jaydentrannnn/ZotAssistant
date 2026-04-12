@@ -117,10 +117,10 @@ LangChain LCEL pipeline served via a FastAPI backend with a React frontend.
 **Per-turn pipeline (`chain.py`):**
 1. `_rewrite_chain` — rewrites the user message into a standalone question using conversation history. Also expands common abbreviations (e.g. `CS` → `COMPSCI`, `ICS` → `I&C SCI`). Must preserve the original question's polarity and framing exactly — never invert a question's meaning when resolving references from history.
 2. `retrieve()` in `retriever.py` — routes → parallel Chroma queries → dedup → rerank (or order-preserve for requirements).
-3. `_format_context` — groups chunks by source URL so multi-chunk pages read as one coherent document rather than many separate `[Source N]` blocks.
+3. `_format_context` — if `file_context` is present in the input dict, prepends a `[User-Attached Document]` block before RAG sources. Then groups chunks by source URL so multi-chunk pages read as one coherent document rather than many separate `[Source N]` blocks.
 4. `_answer_prompt` + main LLM — generates the cited answer.
 
-The full chain is wrapped in `RunnableWithMessageHistory` keyed on `session_id`. Callers only pass `{"input": "..."}` plus a `configurable` session ID.
+The full chain is wrapped in `RunnableWithMessageHistory` keyed on `session_id`. Callers pass `{"input": "...", "file_context": str | None}` plus a `configurable` session ID. `file_context` flows through all LCEL steps automatically via `{**inputs}` spread — only `_format_context` consumes it.
 
 **Answer prompt design intent (`chain.py` — `_answer_prompt`):**
 The prompt is intentionally conversational — like a well-informed peer advisor, not a research analyst. Key behaviors enforced by the prompt:
@@ -158,13 +158,15 @@ Always use `chromadb.PersistentClient` + `OllamaEmbeddingFunction` directly — 
 
 **Memory (`memory.py`):** Sliding window of 6 exchanges (12 messages). Swap `InMemoryChatMessageHistory` for Redis/SQLite here to persist across restarts without touching chain or app code.
 
-**App (`app.py`):** FastAPI server. `POST /api/chat` accepts `{message, session_id}` and streams the response as Server-Sent Events (SSE). Built React frontend is served as static files from `frontend/dist/`. CORS middleware allows the Vite dev server (`localhost:5173`) to reach the API during development. Session IDs are generated client-side — every page refresh creates a new UUID, starting a fresh LangChain session automatically.
+**App (`app.py`):** FastAPI server. `POST /api/chat` accepts `multipart/form-data` with fields `message` (str), `session_id` (str), and optional `file` (UploadFile). File text is extracted by `file_parser.py` and passed as `file_context` into the chain. Streams the response as Server-Sent Events (SSE). Built React frontend is served as static files from `frontend/dist/`. CORS middleware allows the Vite dev server (`localhost:5173`) to reach the API during development. Session IDs are generated client-side — every page refresh creates a new UUID, starting a fresh LangChain session automatically.
+
+**File parser (`file_parser.py`):** Extracts plain text from `.txt`, `.pdf`, and `.docx` uploads. PDF extraction tries pdfplumber first (text-layer PDFs), then falls back to OCR via `pypdfium2` + `pytesseract` for scanned documents. OCR requires the Tesseract binary installed at `C:\Program Files\Tesseract-OCR\tesseract.exe` (the default Windows install path — no PATH configuration needed). Output is hard-capped at 12,000 chars. All parse failures raise `ValueError` which becomes an HTTP 400.
 
 ### Frontend (`frontend/`)
 
 React + Vite + Tailwind + shadcn/ui. Package manager is `pnpm`.
 
-- `src/app/App.tsx` — top-level layout, all chat state, SSE fetch logic. Generates `sessionId` via `crypto.randomUUID()` on mount (resets on refresh).
+- `src/app/App.tsx` — top-level layout, all chat state, SSE fetch logic. Generates `sessionId` via `crypto.randomUUID()` on mount (resets on refresh). File uploads are sent as `multipart/form-data` via `FormData` — do **not** set `Content-Type` manually or the browser-generated multipart boundary will break. Accepted types: `.pdf`, `.docx`, `.txt` only (10 MB limit enforced client-side).
 - `src/app/components/ChatMessage.tsx` — renders user and assistant bubbles. Uses `ReactMarkdown` with `remark-gfm` for markdown + autolink detection. Bare URLs output by the LLM are rendered as human-readable labels via `labelFromUrl()` (e.g. `https://catalogue.uci.edu/.../computerscience_bs` → `Catalogue · Computer Science B.S.`).
 - `src/app/components/EmptyState.tsx` — shown when no messages exist; renders suggestion chips.
 - Streaming: `App.tsx` reads the SSE stream chunk-by-chunk via `ReadableStream`, appending tokens to the assistant bubble in real time. Newlines are escaped as `\n` for SSE transport and unescaped on the client.
@@ -172,12 +174,15 @@ React + Vite + Tailwind + shadcn/ui. Package manager is `pnpm`.
 ## Key Dependencies
 
 - `requests`, `beautifulsoup4` — crawling
-- `pdfplumber` — PDF text extraction
+- `pdfplumber` — PDF text extraction (crawler + file upload text-layer path)
+- `pypdfium2` — renders PDF pages to images for OCR (already in requirements; no poppler needed)
+- `pytesseract` — OCR for scanned PDFs; requires Tesseract binary (`winget install UB-Mannheim.TesseractOCR` or the installer from github.com/UB-Mannheim/tesseract/wiki)
+- `python-docx` — DOCX text extraction for file uploads
 - `chromadb` — vector store; always use `chromadb.PersistentClient` + `OllamaEmbeddingFunction` directly
 - `ollama` — local embeddings (`ollama serve` to start); embedding function is `chromadb.utils.embedding_functions.ollama_embedding_function.OllamaEmbeddingFunction`
 - `langchain`, `langchain-openai`, `langchain-community` — LCEL chain, OpenAI LLMs, FlashrankRerank
 - `flashrank` — local cross-encoder reranker (no API key needed)
-- `fastapi`, `uvicorn` — backend API server with SSE streaming
+- `fastapi`, `uvicorn` — backend API server with SSE streaming; `python-multipart` (already installed) is required for `Form`/`File` parameters
 - `python-dotenv` — reads `.env` for `OPENAI_API_KEY` (copy `.env.example` to `.env`)
 - Frontend: `react`, `vite`, `tailwindcss`, `react-markdown`, `remark-gfm`, `motion`
 
@@ -189,9 +194,10 @@ To add temporary debug logging, add `print()` statements to `retriever.py` (`ret
 
 ## Data Notes
 
-- All data under `data/` is gitignored. Re-run crawler + ingest to rebuild locally.
+- `data/raw/` is gitignored — rebuild by re-running the crawler commands above.
+- `data/db/` (Chroma vector databases) is tracked via **Git LFS** — `*.sqlite3` and `*.bin` files are stored in LFS. Run `git lfs install` before cloning if you need the databases locally. If LFS files are missing, re-run ingest to rebuild.
 - ~5,920 courses across 118 departments on `catalogue.uci.edu/allcourses`.
-- Scanned/image-based PDFs produce no extractable text and are silently skipped.
+- Scanned/image-based PDFs produce no extractable text in the crawler and are silently skipped there. The file upload path handles them via OCR fallback (`file_parser.py`).
 - Chroma does not support graph-style relationships. Course-to-major relationships are retrievable through RAG because major requirement pages mention course codes directly in their ingested text.
 - After any change to `ingest.py`, re-run the affected collection's ingest command — `upsert()` makes this safe and idempotent.
 - The majors collection must be crawled per-school (one command per school URL). Do not crawl from the catalogue root.
