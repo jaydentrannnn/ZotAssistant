@@ -107,12 +107,18 @@ exactly as it would appear in the UCI catalogue (e.g. "Computer Science", "Infor
 "Mathematics", "Electrical Engineering"). Leave null if no specific program is mentioned.
 This is used to filter the majors collection to only relevant programme pages.
 
-requires_full_requirements: Set to true ONLY when the student is explicitly asking what
-courses are required to complete a specific major or minor — e.g. "what courses do I need
-for the CS major?", "list the lower-division requirements for Computer Science", "what
-upper-division courses are required for Math?". Set to false for questions about major
-overview, specialisations, admissions, sample plans, career paths, or anything that is
-not specifically about the full course requirement list.
+requires_full_requirements: Set to true when the student is asking what courses are
+required for a specific major or minor, OR when they are asking whether a specific course
+is required/mandatory in a major or minor. Examples that should be true:
+  "what courses do I need for the CS major?"
+  "list the lower-division requirements for Computer Science"
+  "what upper-division courses are required for Math?"
+  "do I have to take COMPSCI 161 as a CS major?"
+  "is COMPSCI 161 required for the Computer Science major?"
+  "does the CS major require COMPSCI 163?"
+  "is ICS 6B mandatory for the Informatics major?"
+Set to false for questions about major overview, specialisations, admissions, sample
+plans, career paths, or anything that is not about whether specific courses are required.
 """
 
 

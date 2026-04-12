@@ -1,104 +1,105 @@
 """
-Gradio web interface for the UCI Academic Assistant.
+FastAPI backend for the UCI Academic Assistant.
 
 Usage:
     python -m rag_chatbot.app
     python -m rag_chatbot.app --port 8080
     python -m rag_chatbot.app --host 0.0.0.0 --port 7860
 
-Each browser tab gets its own UUID session_id stored in gr.State.
-LangChain's RunnableWithMessageHistory handles per-session history
-server-side — Gradio only manages the display messages.
+Serves the React frontend from frontend/dist/ and exposes POST /api/chat
+as a Server-Sent Events stream. Each request carries its own session_id
+(generated client-side as a UUID on page load) so every browser tab is
+isolated and every refresh starts a fresh conversation.
 """
 
 import argparse
-import uuid
+from pathlib import Path
 
-import gradio as gr
+import uvicorn
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel
 
 from .chain import chain
 
+app = FastAPI(title="UCI Academic Assistant")
+
+# Allow the Vite dev server to reach the API during local development.
+# In production the frontend is served from the same origin, so this is a no-op.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
+    allow_methods=["POST", "GET", "OPTIONS"],
+    allow_headers=["*"],
+)
+
 # ──────────────────────────────────────────────────────────────────────────────
-# Chat handler (streaming)
+# Chat endpoint — SSE streaming
 # ──────────────────────────────────────────────────────────────────────────────
 
-async def _respond(
-    message: str,
-    history: list[dict],
-    session_id: str,
-):
-    """
-    Append the user message and a blank assistant placeholder, then stream
-    the response chunk-by-chunk into the placeholder.
-    Yields (cleared_input, updated_history, session_id) on every chunk.
-    """
-    if not message.strip():
-        yield "", history, session_id
-        return
+class ChatRequest(BaseModel):
+    message: str
+    session_id: str
 
-    history = history or []
-    history.append({"role": "user", "content": message})
-    history.append({"role": "assistant", "content": ""})
 
-    yield "", history, session_id
-
-    partial = ""
+async def _sse_stream(message: str, session_id: str):
+    """Yield SSE-formatted token chunks from the LangChain chain."""
     async for chunk in chain.astream(
         {"input": message},
         config={"configurable": {"session_id": session_id}},
     ):
-        partial += chunk
-        history[-1]["content"] = partial
-        yield "", history, session_id
+        # Escape newlines so each event stays on a single line
+        escaped = chunk.replace("\n", "\\n")
+        yield f"data: {escaped}\n\n"
+    yield "data: [DONE]\n\n"
+
+
+@app.post("/api/chat")
+async def chat(request: ChatRequest):
+    if not request.message.strip():
+        return {"error": "Empty message"}
+    return StreamingResponse(
+        _sse_stream(request.message, request.session_id),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# UI layout
+# Serve the built React frontend (SPA fallback to index.html)
 # ──────────────────────────────────────────────────────────────────────────────
 
-def create_demo() -> gr.Blocks:
-    with gr.Blocks(title="UCI Academic Assistant") as demo:
-        gr.Markdown(
-            "# UCI Academic Assistant\n"
-            "Ask about UCI courses, academic policies, or major and minor requirements."
-        )
+_DIST = Path(__file__).parent.parent / "frontend" / "dist"
 
-        session_id = gr.State(lambda: str(uuid.uuid4()))
+# Mount /assets separately so Starlette serves hashed JS/CSS files efficiently
+_ASSETS = _DIST / "assets"
+if _ASSETS.exists():
+    app.mount("/assets", StaticFiles(directory=str(_ASSETS)), name="assets")
 
-        chatbot = gr.Chatbot(height=520)
 
-        with gr.Row():
-            msg = gr.Textbox(
-                placeholder="e.g. What are the prerequisites for CS 161?",
-                scale=9,
-                show_label=False,
-                container=False,
-                autofocus=True,
-            )
-            send_btn = gr.Button("Send", scale=1, variant="primary")
+@app.get("/")
+async def serve_index():
+    index = _DIST / "index.html"
+    if index.exists():
+        return FileResponse(index)
+    return {"error": "Frontend not built. Run `pnpm build` inside frontend/."}
 
-        gr.Examples(
-            examples=[
-                "What are the prerequisites for CS 161?",
-                "What courses are required for the Computer Science major?",
-                "Can I take ICS 6B and ICS 6D at the same time?",
-                "What is UCI's academic integrity policy?",
-                "What is the deadline to add or drop a course?",
-                "How many units do I need to graduate?",
-            ],
-            inputs=msg,
-            label="Example questions",
-        )
 
-        submit_kwargs = dict(
-            fn=_respond,
-            inputs=[msg, chatbot, session_id],
-            outputs=[msg, chatbot, session_id],
-        )
-        send_btn.click(**submit_kwargs)
-        msg.submit(**submit_kwargs)
-
-    return demo
+@app.get("/{full_path:path}")
+async def serve_spa(full_path: str):
+    """Serve static files by path; fall back to index.html for client-side routes."""
+    candidate = _DIST / full_path
+    if candidate.is_file():
+        return FileResponse(candidate)
+    index = _DIST / "index.html"
+    if index.exists():
+        return FileResponse(index)
+    return {"error": "Frontend not built. Run `pnpm build` inside frontend/."}
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -107,23 +108,14 @@ def create_demo() -> gr.Blocks:
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Run the UCI Academic Assistant Gradio web interface.",
+        description="Run the UCI Academic Assistant web server.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
-    parser.add_argument("--host", default="127.0.0.1", help="Host address to bind to")
+    parser.add_argument("--host", default="127.0.0.1", help="Host to bind to")
     parser.add_argument("--port", type=int, default=7860, help="Port to serve on")
-    parser.add_argument(
-        "--share", action="store_true", help="Create a public Gradio share link"
-    )
     args = parser.parse_args()
 
-    demo = create_demo()
-    demo.launch(
-        server_name=args.host,
-        server_port=args.port,
-        share=args.share,
-        theme=gr.themes.Soft(),
-    )
+    uvicorn.run(app, host=args.host, port=args.port)
 
 
 if __name__ == "__main__":

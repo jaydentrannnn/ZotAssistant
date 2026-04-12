@@ -53,7 +53,13 @@ _rewrite_prompt = ChatPromptTemplate.from_messages(
             "(e.g., CS to COMPSCI, ICS to I&C SCI, INF to IN4MATX, SE to SWE, MAE to ENGRMAE, CEE to ENGRCEE). "
             "Ensure course codes are fully capitalized. "
             "If the message is already self-contained, return it unchanged. "
-            "Output only the rewritten question — no explanation.",
+            "CRITICAL rules — you must follow these exactly:\n"
+            "1. Preserve the original question's polarity and framing without exception. "
+            "A question like 'do I have to take X' must remain a question about whether the student has to take X — "
+            "never reframe it as 'is it true that X is not required' or any negative or inverted form.\n"
+            "2. Use conversation history only to resolve ambiguous references such as pronouns or implied course names "
+            "(e.g. 'it' → 'COMPSCI 161'). Never reference, repeat, challenge, or build on what a previous answer said.\n"
+            "3. Output only the rewritten question — no explanation, no preamble.",
         ),
         MessagesPlaceholder("chat_history"),
         ("human", "{input}"),
