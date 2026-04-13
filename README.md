@@ -20,7 +20,7 @@
 
 ## Demo
 
-![Chat Interface](doc/screenshots/mew_chat.png)
+![Chat Interface](doc/screenshots/new_chat.png)
 ![Conversation in Action](doc/screenshots/streamed_answer.png)
 <!-- TODO: GIF (optional) — docs/screenshots/file-upload.gif -->
 
