@@ -20,8 +20,8 @@
 
 ## Demo
 
-<!-- TODO: screenshot — docs/screenshots/empty-state.png -->
-<!-- TODO: screenshot — docs/screenshots/answer-streaming.png -->
+![Chat Interface](docs/screenshots/mew_chat.png)
+![Conversation in Action](docs/screenshots/streamed_answer.png)
 <!-- TODO: GIF (optional) — docs/screenshots/file-upload.gif -->
 
 > Place screenshots in `docs/screenshots/` and replace the comments above with `![description](docs/screenshots/<file>)`.
