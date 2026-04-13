@@ -156,6 +156,18 @@ Always use `chromadb.PersistentClient` + `OllamaEmbeddingFunction` directly — 
 
 **`_DB_CONFIG` in `retriever.py`** is the single place to tune per-collection retrieval depth (k values and DB paths).
 
+**Deduplication (`_dedup`):** Keyed on `(url, chunk_id|code, sha1(content))`, not a content prefix. Prefix-based dedup was unsafe for chunks sharing a `"[COMPSCI 161] "` or `"{page title} > {heading}: "` prefix — different chunks could collide and get wrongly dropped. Used by both `_retrieve_parallel` and the final merge in `retrieve()`.
+
+**Query embedding cache (`_embed_cached`):** `functools.lru_cache(maxsize=256)` keyed on the rewritten question string. `nomic-embed-text` is deterministic so no invalidation is needed. Values are cast to plain Python `float` — Chroma rejects `list[np.float32]` even though it accepts numpy arrays, so don't skip the cast.
+
+**Reranker thread-safety:** `FlashrankRerank` is constructed **per call** inside `_rerank()`. Do not hoist it to module scope — mutating `top_n` on a shared instance races under concurrent FastAPI requests. Model weights are cached internally so per-call construction is cheap.
+
+**Relevance floor:** After reranking, docs below `_RELEVANCE_FLOOR = 0.05` (`metadata["relevance_score"]`) are dropped. `_MIN_KEEP = 3` guarantees at least three docs survive so weak-but-valid queries still get context. The floor is skipped when `requires_full_requirements` is True (reranker is bypassed there anyway).
+
+**`major_keyword` normalization:** Router output is normalized with `.strip().title()` before use in `$contains` filters. Chroma's `$contains` is case-sensitive and UCI catalogue pages use title case consistently; skipping this caused silent no-match filters.
+
+**`_query_collection` does NOT catch exceptions.** A no-match `where_document` filter returns an empty list from Chroma, not an exception. Do not reintroduce a silent fallback — it pollutes filtered queries with unfiltered chunks and hides real Chroma bugs.
+
 **Memory (`memory.py`):** Sliding window of 6 exchanges (12 messages). Swap `InMemoryChatMessageHistory` for Redis/SQLite here to persist across restarts without touching chain or app code.
 
 **App (`app.py`):** FastAPI server. `POST /api/chat` accepts `multipart/form-data` with fields `message` (str), `session_id` (str), and optional `file` (UploadFile). File text is extracted by `file_parser.py` and passed as `file_context` into the chain. Streams the response as Server-Sent Events (SSE). Built React frontend is served as static files from `frontend/dist/`. CORS middleware allows the Vite dev server (`localhost:5173`) to reach the API during development. Session IDs are generated client-side — every page refresh creates a new UUID, starting a fresh LangChain session automatically.
@@ -216,6 +228,8 @@ python eval/report.py          # diffs latest vs previous run
 python eval/report.py --list   # show all available runs
 ```
 
+**`report.py` is not dataset-aware** — it diffs whichever two runs are most recent. Comparing a courses run vs. a majors run shows large false "regressions" because Recall@1 is inherently higher on courses (direct code lookup dominates). For before/after code changes, run the **same** dataset on both sides, or `git stash` the changes to capture a clean baseline first.
+
 Results land in `eval/runs/<timestamp>/` (gitignored). `conftest.py` at the project root handles `sys.path` for pytest.
 
 **Harness quick-reference:**
@@ -243,6 +257,8 @@ To add temporary debug logging, add `print()` statements to `retriever.py` (`ret
 
 ## Data Notes
 
+- `README.md` is the public-facing project overview. `CLAUDE.md` is the authoritative technical reference — do not duplicate content between them.
+- Demo screenshots for the README live in `docs/screenshots/` and are committed to git (not LFS). The project logo is at `ZotAssistantLogo.png` in the repo root.
 - `data/raw/` is gitignored — rebuild by re-running the crawler commands above.
 - `data/db/` (Chroma vector databases) is tracked via **Git LFS** — `*.sqlite3` and `*.bin` files are stored in LFS. Run `git lfs install` before cloning if you need the databases locally. If LFS files are missing, re-run ingest to rebuild.
 - ~5,920 courses across 118 departments on `catalogue.uci.edu/allcourses`.

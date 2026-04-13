@@ -13,8 +13,10 @@ Pipeline per query:
 """
 
 import asyncio
+import hashlib
 import os
 import re
+from functools import lru_cache
 from pathlib import Path
 from typing import Literal
 
@@ -50,6 +52,36 @@ _DB_CONFIG = {
 # ──────────────────────────────────────────────────────────────────────────────
 
 _embedding_fn = OllamaEmbeddingFunction(url=_OLLAMA_URL, model_name=_OLLAMA_MODEL)
+
+
+@lru_cache(maxsize=256)
+def _embed_cached(text: str) -> tuple[float, ...]:
+    # nomic-embed-text is deterministic, so caching on the exact string is safe.
+    # Cast to plain Python float — Chroma validates against `float | int`, and a
+    # raw list of np.float32 scalars fails that check (though numpy arrays pass).
+    return tuple(float(x) for x in _embedding_fn([text])[0])
+
+
+def _dedup(docs: list) -> list:
+    """Deduplicate Documents using (url, chunk_id|code, content hash).
+
+    Falls back to a full-content SHA-1 when metadata is missing. Avoids the
+    false-collision risk of prefix-based dedup on chunks that share a prefix
+    like '[COMPSCI 161] ' or '{title} > {heading}: '.
+    """
+    seen: set = set()
+    out: list = []
+    for doc in docs:
+        meta = doc.metadata or {}
+        content_hash = hashlib.sha1(doc.page_content.encode("utf-8")).hexdigest()
+        url = meta.get("url")
+        ident = meta.get("chunk_id") or meta.get("code")
+        key = (url, ident, content_hash) if url or ident else content_hash
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(doc)
+    return out
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Chroma collections (loaded once at import time)
@@ -164,23 +196,15 @@ async def _query_collection(
     if where_document:
         query_kwargs["where_document"] = where_document
 
-    # chromadb.query is synchronous — run in a thread to avoid blocking the event loop
+    # chromadb.query is synchronous — run in a thread to avoid blocking the event loop.
+    # A no-match where_document returns an empty list, not an exception — so we do NOT
+    # swallow errors here. Let real Chroma failures surface instead of silently polluting
+    # results with unfiltered chunks.
     loop = asyncio.get_event_loop()
-    try:
-        results = await loop.run_in_executor(
-            None,
-            lambda: collection.query(**query_kwargs),
-        )
-    except Exception:
-        # If the filter yields no candidates, Chroma may raise; fall back without filter
-        results = await loop.run_in_executor(
-            None,
-            lambda: collection.query(
-                query_embeddings=[embedding],
-                n_results=k,
-                include=["documents", "metadatas"],
-            ),
-        )
+    results = await loop.run_in_executor(
+        None,
+        lambda: collection.query(**query_kwargs),
+    )
 
     docs = []
     for text, meta in zip(results["documents"][0], results["metadatas"][0]):
@@ -203,8 +227,13 @@ async def _retrieve_parallel(
         overview and admissions chunks that would otherwise rank above the course lists.
     """
     loop = asyncio.get_event_loop()
-    embeddings = await loop.run_in_executor(None, _embedding_fn, [question])
-    embedding: list[float] = embeddings[0]
+    embedding_tuple = await loop.run_in_executor(None, _embed_cached, question)
+    embedding: list[float] = list(embedding_tuple)
+
+    # Chroma's $contains is case-sensitive. UCI catalogue pages use title case
+    # consistently, so normalize the router's output to avoid silent no-match filters.
+    if major_keyword:
+        major_keyword = major_keyword.strip().title()
 
     tasks = []
     for name in collections:
@@ -229,31 +258,38 @@ async def _retrieve_parallel(
             tasks.append(_query_collection(name, embedding))
 
     batches = await asyncio.gather(*tasks)
-
-    # Flatten and deduplicate on first 200 chars of content
-    seen: set[str] = set()
-    docs: list[Document] = []
-    for batch in batches:
-        for doc in batch:
-            key = doc.page_content[:200]
-            if key not in seen:
-                seen.add(key)
-                docs.append(doc)
-    return docs
+    return _dedup([doc for batch in batches for doc in batch])
 
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Reranker (local cross-encoder — no API call)
 # ──────────────────────────────────────────────────────────────────────────────
 
-_reranker = FlashrankRerank(top_n=15)
+# Minimum relevance score below which reranked chunks are considered noise and
+# dropped before hitting the prompt. FlashrankRerank attaches a score in
+# metadata["relevance_score"] after compression.
+_RELEVANCE_FLOOR = 0.05
+_MIN_KEEP = 3
 
 
 def _rerank(docs: list[Document], question: str, top_n: int = 15) -> list[Document]:
     if not docs:
         return []
-    _reranker.top_n = top_n
-    return _reranker.compress_documents(docs, question)
+    # Construct per call — FlashrankRerank caches model weights internally, so
+    # this is cheap and avoids a shared-state race when concurrent requests each
+    # want a different top_n.
+    reranker = FlashrankRerank(top_n=top_n)
+    ranked = reranker.compress_documents(docs, question)
+
+    # Drop low-relevance chunks, but always keep at least _MIN_KEEP so a weakly
+    # matched question still gets some context rather than nothing.
+    filtered = [
+        d for d in ranked
+        if d.metadata.get("relevance_score", 1.0) >= _RELEVANCE_FLOOR
+    ]
+    if len(filtered) < _MIN_KEEP:
+        return ranked[:_MIN_KEEP]
+    return filtered
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -371,14 +407,9 @@ async def retrieve(question: str) -> list[Document]:
         question, collections, major_keyword, requires_full_requirements
     )
 
-    # Step 3: merge — direct docs first (guaranteed relevant), then semantic
-    seen: set[str] = {d.page_content[:200] for d in direct_docs}
-    for d in semantic_docs:
-        key = d.page_content[:200]
-        if key not in seen:
-            seen.add(key)
-            direct_docs.append(d)
-    all_docs = direct_docs
+    # Step 3: merge — direct docs first (guaranteed relevant), then semantic.
+    # _dedup preserves order, so direct-lookup results keep their priority.
+    all_docs = _dedup(direct_docs + semantic_docs)
 
     # Step 4: rerank — or skip for requirements queries
     if requires_full_requirements:

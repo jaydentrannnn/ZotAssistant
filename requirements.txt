@@ -29,6 +29,7 @@ FlashRank==0.2.10
 flatbuffers==25.12.19
 frozenlist==1.8.0
 fsspec==2026.3.0
+git-filter-repo==2.47.0
 googleapis-common-protos==1.73.1
 gradio==6.12.0
 gradio_client==2.4.1
@@ -48,6 +49,7 @@ humanfriendly==10.0
 idna==3.11
 importlib_metadata==8.7.1
 importlib_resources==6.5.2
+iniconfig==2.3.0
 Jinja2==3.1.6
 jiter==0.14.0
 jsonpatch==1.33
@@ -68,6 +70,7 @@ langgraph-checkpoint==4.0.1
 langgraph-prebuilt==1.0.9
 langgraph-sdk==0.3.13
 langsmith==0.7.30
+lxml==6.0.4
 markdown-it-py==4.0.0
 MarkupSafe==3.0.3
 marshmallow==3.26.2
@@ -96,6 +99,7 @@ pdfminer.six==20251230
 pdfplumber==0.11.9
 pefile==2024.8.26
 pillow==12.2.0
+pluggy==1.6.0
 propcache==0.4.1
 protobuf==6.33.6
 pybase64==1.4.3
@@ -109,9 +113,10 @@ pypdfium2==5.7.0
 PyPika==0.51.1
 pyproject_hooks==1.2.0
 pyreadline3==3.5.4
+pytesseract==0.3.13
+pytest==9.0.3
 python-dateutil==2.9.0.post0
 python-docx==1.2.0
-pytesseract==0.3.13
 python-dotenv==1.2.2
 python-multipart==0.0.26
 python-ptrace==0.9.9
@@ -155,4 +160,3 @@ xxhash==3.6.0
 yarl==1.23.0
 zipp==3.23.0
 zstandard==0.25.0
-pytest>=8.0
