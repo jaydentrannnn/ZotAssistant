@@ -24,8 +24,6 @@
 ![Conversation in Action](docs/screenshots/streamed_answer.png)
 <!-- TODO: GIF (optional) — docs/screenshots/file-upload.gif -->
 
-> Place screenshots in `docs/screenshots/` and replace the comments above with `![description](docs/screenshots/<file>)`.
-
 ---
 
 ## Features
